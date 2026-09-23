@@ -1,12 +1,13 @@
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DATA_FILES = (DATA_DIR / "data1.csv", DATA_DIR / "data2.csv")
+MAX_DWELL_HOURS = 48
 COLUMNS = {"외내", "전출항지", "차항지", "입항일시", "출항일시", "총톤수"}
 COLORS = [
     "coral", "gold", "seagreen", "skyblue", "mediumpurple",
@@ -14,8 +15,7 @@ COLORS = [
 ]
 
 
-@st.cache_data(show_spinner="CSV 데이터를 읽는 중입니다…")
-def load_data(file_signatures: tuple[tuple[str, int, int], ...]) -> pd.DataFrame:
+def load_data() -> pd.DataFrame:
     frames = [
         pd.read_csv(
             path,
@@ -23,7 +23,7 @@ def load_data(file_signatures: tuple[tuple[str, int, int], ...]) -> pd.DataFrame
             usecols=lambda name: name.strip() in COLUMNS,
             low_memory=False,
         )
-        for path, _, _ in file_signatures
+        for path in DATA_FILES
     ]
     data = pd.concat(frames, ignore_index=True)
     data.columns = data.columns.str.strip()
@@ -67,54 +67,90 @@ def summarize(data: pd.DataFrame, top_n: int, max_hours: int) -> pd.DataFrame:
 
 def bar_chart(values: pd.Series, title: str, xlabel: str, *, percent: bool = False):
     values = values.dropna().sort_values()
-    fig, ax = plt.subplots(figsize=(9, 5.5))
+    fig = go.Figure()
     if values.empty:
-        ax.text(0.5, 0.5, "표시할 유효 데이터가 없습니다", ha="center", va="center", transform=ax.transAxes)
-        ax.set_xlim(0, 1)
+        fig.add_annotation(
+            text="표시할 유효 데이터가 없습니다",
+            x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False,
+        )
     else:
         colors = [COLORS[i % len(COLORS)] for i in range(len(values))]
-        bars = ax.barh(values.index, values.to_numpy(), color=colors)
-        label = "%.1f%%" if percent else "%.1f"
-        ax.bar_label(bars, fmt=label, padding=4, fontsize=9)
-        ax.set_xlim(0, max(values.max() * 1.2, 1))
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.grid(axis="x", alpha=0.2)
-    ax.set_axisbelow(True)
-    fig.tight_layout()
+        value_format = ",.0f" if xlabel == "건수" else ".1f"
+        suffix = "%" if percent else ("시간" if xlabel == "시간" else "")
+        fig.add_trace(go.Bar(
+            x=values.to_numpy(),
+            y=values.index.tolist(),
+            orientation="h",
+            marker_color=colors,
+            text=[f"{value:{value_format}}{suffix}" for value in values],
+            textposition="outside",
+            hovertemplate=f"<b>%{{y}}</b><br>{xlabel}: %{{x:{value_format}}}{suffix}<extra></extra>",
+        ))
+        fig.update_xaxes(range=[0, max(values.max() * 1.2, 1)])
+    fig.update_layout(
+        title=title,
+        xaxis_title=xlabel,
+        yaxis_title=None,
+        height=max(440, len(values) * 32 + 140),
+        margin=dict(l=20, r=60, t=60, b=50),
+        showlegend=False,
+    )
     return fig
 
 
 def scatter_chart(summary: pd.DataFrame, max_hours: int):
-    points = summary[["총톤수 비율 (%)", "평균 체류시간 (시간)"]].dropna()
-    fig, ax = plt.subplots(figsize=(10, 5.5))
+    points = summary.dropna(subset=["총톤수 비율 (%)", "평균 체류시간 (시간)"])
+    fig = go.Figure()
     for i, (port, row) in enumerate(points.iterrows()):
         x = row["총톤수 비율 (%)"]
         y = row["평균 체류시간 (시간)"]
-        ax.scatter(x, y, color=COLORS[i % len(COLORS)], s=100)
-        ax.annotate(port, (x, y), xytext=(5, 5), textcoords="offset points", fontsize=9)
-    ax.set_xlabel("선정된 전출항지의 총톤수 비율 (%)")
-    ax.set_ylabel(f"평균 체류시간 (시간, {max_hours}시간 이하)")
-    ax.set_title("총톤수 비율과 평균 체류시간")
-    ax.grid(alpha=0.25)
-    fig.tight_layout()
+        fig.add_trace(go.Scatter(
+            x=[x], y=[y], mode="markers+text", name=port,
+            text=[port], textposition="top center",
+            marker=dict(color=COLORS[i % len(COLORS)], size=12),
+            hovertemplate=(
+                f"<b>{port}</b><br>"
+                "총톤수 비율: %{x:.2f}%<br>"
+                "평균 체류시간: %{y:.2f}시간<br>"
+                f"입출항 건수: {int(row['입출항 건수']):,}건<br>"
+                f"유효 체류시간 건수: {int(row['유효 체류시간 건수']):,}건"
+                "<extra></extra>"
+            ),
+        ))
+    if points.empty:
+        fig.add_annotation(
+            text="표시할 유효 데이터가 없습니다",
+            x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False,
+        )
+    fig.update_layout(
+        title="총톤수 비율과 평균 체류시간",
+        xaxis_title="선정된 전출항지의 총톤수 비율 (%)",
+        yaxis_title=f"평균 체류시간 (시간, {max_hours}시간 이하)",
+        height=440,
+        margin=dict(l=20, r=20, t=60, b=50),
+        showlegend=False,
+        hovermode="closest",
+    )
     return fig
 
 
 def main() -> None:
     st.set_page_config(page_title="전출항지 분석 대시보드", layout="wide")
-    plt.rcParams["font.family"] = "Malgun Gothic"
-    plt.rcParams["axes.unicode_minus"] = False
 
-    st.title("전출항지 분석 대시보드")
-    st.caption("data1.csv + data2.csv · 외항 선박 기준")
+    st.title("전출항지별 분석 대시보드")
+    st.caption('데이터 출처:해양수산부 portmis')
+
+    st.link_button(
+        "원본 데이터 사이트",
+        "https://new.portmis.go.kr/portmis/websquare/websquare.jsp?w2xPath=/portmis/w2/main/index.xml&page=/portmis/w2/sp/vssl/vsch/UI-PM-SP-104-02.xml&menuId=1319&menuCd=M0182&menuNm=%EC%84%A0%EB%B0%95%EC%9E%85%EC%B6%9C%ED%95%AD%ED%98%84%ED%99%A9",
+        type="primary",
+    )
 
     missing = [path.name for path in DATA_FILES if not path.is_file()]
     if missing:
         st.error(f"데이터 파일을 찾을 수 없습니다: {', '.join(missing)}")
         st.stop()
-    signatures = tuple((str(path), path.stat().st_size, path.stat().st_mtime_ns) for path in DATA_FILES)
-    data = load_data(signatures)
+    data = load_data()
     if data.empty:
         st.warning("외항 데이터가 없습니다.")
         st.stop()
@@ -122,10 +158,8 @@ def main() -> None:
     with st.sidebar:
         st.header("분석 설정")
         top_n = st.slider("전출항지 상위 개수", min_value=3, max_value=20, value=10)
-        max_hours = st.slider("체류시간 상한 (시간)", min_value=1, max_value=168, value=48)
-        st.caption("체류시간은 0시간 이상, 설정한 상한 이하인 기록만 평균에 사용합니다.")
 
-    summary = summarize(data, top_n, max_hours)
+    summary = summarize(data, top_n, MAX_DWELL_HOURS)
     valid_count = int(summary["유효 체류시간 건수"].sum())
     total_tonnage = summary["총톤수 합계"].sum()
     m1, m2, m3, m4 = st.columns(4)
@@ -136,17 +170,15 @@ def main() -> None:
 
     left, right = st.columns(2)
     with left:
-        fig = bar_chart(summary["입출항 건수"], "전출항지 빈도", "건수")
-        st.pyplot(fig)
-        plt.close(fig)
+        fig = bar_chart(summary["입출항 건수"], "전출항지 TOP10 항구", "건수")
+        st.plotly_chart(fig, width="stretch")
     with right:
         fig = bar_chart(
             summary["평균 체류시간 (시간)"],
-            f"평균 체류시간 ({max_hours}시간 이하)",
+            f"평균 체류시간 ({MAX_DWELL_HOURS}시간 이하) TOP10 항구",
             "시간",
         )
-        st.pyplot(fig)
-        plt.close(fig)
+        st.plotly_chart(fig, width="stretch")
 
     left, right = st.columns(2)
     with left:
@@ -156,12 +188,10 @@ def main() -> None:
             "상위 전출항지 총톤수 합계 대비 (%)",
             percent=True,
         )
-        st.pyplot(fig)
-        plt.close(fig)
+        st.plotly_chart(fig, width="stretch")
     with right:
-        fig = scatter_chart(summary, max_hours)
-        st.pyplot(fig)
-        plt.close(fig)
+        fig = scatter_chart(summary, MAX_DWELL_HOURS)
+        st.plotly_chart(fig, width="stretch")
 
     st.subheader("전출항지별 요약")
     st.dataframe(
@@ -177,21 +207,25 @@ def main() -> None:
         ),
         width="stretch",
     )
-    st.download_button(
-        "요약 CSV 다운로드",
-        summary.to_csv(encoding="utf-8-sig").encode("utf-8-sig"),
-        file_name="port_summary.csv",
-        mime="text/csv",
-    )
+
 
     with st.expander("분석 기준과 해석"):
         st.write(
             "전출항지 순위는 외항 기록의 출현 건수로 정합니다. 체류시간은 출항일시에서 "
             "입항일시를 뺀 값이며, 날짜 오류·음수·설정 상한 초과 기록을 평균에서 제외합니다. "
-            "총톤수 합계와 비율은 선정된 전출항지의 모든 외항 기록으로 계산합니다. "
             "총톤수는 선박의 크기를 나타내며 실제 화물량은 아닙니다. "
             "전출항지는 항만명과 지역명 등이 섞여 있어 국가별 통계로 해석하지 않습니다."
         )
+
+
+    with st.expander("결론"):
+        st.write(
+        "부산항 데이터를 분석한 결과, 상하이·닝보·칭다오를 전출항지로 하는 화물 및 선박의 비중이 높게 나타났다."
+        "동시에 해당 항로의 선박들은 부산항 입항부터 출항까지 평균 체류시간도 상대적으로 길게 나타났으며 총톤수도 높은 대형 선박 위주로 많은 화물이 들어오는 경향이 있다."
+        "따라서 주요 중국 항로는 부산항 운영에서 물동량 측면의 중요도가 높으면서 체류시간 관리의 영향도 큰 구간으로 볼 수 있다."
+        "다만 현재 분석만으로 전출항지가 부산항 체류시간 증가의 직접적인 원인이라고 판단할 수는 없으며, 실제화물량·접안 부두·시간대 등의 요인을 추가적으로 분석할 필요가 있다."
+        "이에 따라 주요 항로의 평균 체류시간과 장시간 체류 비율을 핵심 KPI로 관리하고, 체류시간이 증가하는 조건을 파악하는 것을 운영 효율화 방향으로 제안한다."
+    )
 
 
 if __name__ == "__main__":
